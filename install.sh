@@ -1,24 +1,41 @@
 #!/bin/bash
-# Обновляем систему и ставим зависимости
-apt update && apt install -y curl wget tar
 
-# Качаем последнюю версию панели 3x-ui напрямую из официальных релизов
-# Это самая стабильная версия с поддержкой лимитов и Reality
-last_version=$(curl -Ls "https://github.com" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-if [[ ! -n "$last_version" ]]; then
-    last_version="v0.3.4" # Резервный вариант, если API GitHub отдаст ошибку
-fi
+set -e
 
-# Сама установка ядра и панели
-wget -N https://github.com{last_version}/x-ui-linux-amd64.tar.gz
-cd /usr/local/ && tar zxvf /tmp/x-ui-linux-amd64.tar.gz
-rm /tmp/x-ui-linux-amd64.tar.gz
-cd x-ui
-chmod +x x-ui bin/xray-linux-amd64
-cp -f x-ui.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable x-ui
-systemctl start x-ui
+echo "[1/6] Обновление системы..."
+apt update && apt upgrade -y
 
-echo "Установка завершена! Панель доступна по порту 2053 (стандартный)."
-echo "Логин/пароль по умолчанию: admin / admin"
+echo "[2/6] Установка зависимостей..."
+apt install -y curl wget git ufw
+
+echo "[3/6] Установка WireGuard..."
+apt install -y wireguard
+
+echo "[4/6] Настройка сети..."
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+sysctl -p
+
+echo "[5/6] Генерация ключей..."
+mkdir -p /etc/wireguard
+cd /etc/wireguard
+
+wg genkey | tee server_private.key | wg pubkey > server_public.key
+
+SERVER_PRIV=$(cat server_private.key)
+
+cat > wg0.conf <<EOF
+[Interface]
+Address = 10.0.0.1/24
+ListenPort = 51820
+PrivateKey = $SERVER_PRIV
+SaveConfig = true
+
+PostUp = iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+EOF
+
+echo "[6/6] Запуск WireGuard..."
+systemctl enable wg-quick@wg0
+systemctl start wg-quick@wg0
+
+echo "Готово."
